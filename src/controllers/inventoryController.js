@@ -6,14 +6,36 @@ export const getMainInventory = async (req, res) => {
 };
 
 export const addMainInventory = async (req, res) => {
-  const inv = await Inventory.create({
-    product: req.body.product,
-    tipe_lokasi: "utama",
-    stok: req.body.stok,
-    harga_modal: req.body.harga_modal
-  });
-  res.json(inv);
+  try {
+    const { product, stok, harga_modal, harga_jual } = req.body;
+
+    let inventory = await Inventory.findOne({
+      product,
+      tipe_lokasi: "utama"
+    });
+
+    if (inventory) {
+      inventory.stok += Number(stok);
+      inventory.harga_modal = harga_modal;
+      inventory.harga_jual = harga_jual;
+      await inventory.save();
+    } else {
+      inventory = await Inventory.create({
+        product,
+        tipe_lokasi: "utama",
+        stok: Number(stok),
+        harga_modal,
+        harga_jual
+      });
+    }
+
+    res.json(inventory);
+  } catch (error) {
+    res.status(500).json({ message: "Gagal update stok gudang utama" });
+  }
 };
+
+
 
 // CABANG
 export const getBranchInventory = async (req, res) => {
@@ -38,36 +60,44 @@ export const updateBranchInventory = async (req, res) => {
 
 // RESTOCK
 export const restockBranch = async (req, res) => {
-  const { product, branch, qty } = req.body;
+  try {
+    const { product, branch, qty } = req.body;
 
-  const gudang = await Inventory.findOne({
-    product,
-    tipe_lokasi: "utama"
-  });
+    const gudang = await Inventory.findOne({
+      product,
+      tipe_lokasi: "utama"
+    });
 
-  if (!gudang || gudang.stok < qty)
-    return res.status(400).json({ message: "Stok gudang tidak cukup" });
+    if (!gudang || gudang.stok < qty) {
+      return res.status(400).json({ message: "Stok gudang tidak cukup" });
+    }
 
-  gudang.stok -= qty;
-  await gudang.save();
-
-  let cabang = await Inventory.findOne({
-    product,
-    tipe_lokasi: "cabang",
-    branch
-  });
-
-  if (!cabang) {
-    cabang = await Inventory.create({
+    let cabang = await Inventory.findOne({
       product,
       tipe_lokasi: "cabang",
-      branch,
-      stok: 0
+      branch
     });
+
+    if (!cabang) {
+      cabang = await Inventory.create({
+        product,
+        tipe_lokasi: "cabang",
+        branch,
+        stok: 0,
+        harga_jual: gudang.harga_jual // ✅ WAJIB
+      });
+    }
+
+    // update stok
+    gudang.stok -= qty;
+    cabang.stok += qty;
+
+    await gudang.save();
+    await cabang.save();
+
+    res.json({ message: "Restock berhasil" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Gagal restock ke cabang" });
   }
-
-  cabang.stok += qty;
-  await cabang.save();
-
-  res.json({ message: "Restock berhasil" });
 };

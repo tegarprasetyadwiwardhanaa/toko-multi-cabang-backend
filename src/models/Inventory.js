@@ -6,7 +6,12 @@ const inventorySchema = new mongoose.Schema({
   branch: { type: mongoose.Schema.Types.ObjectId, ref: "Branch", default: null },
   stok: Number,
   harga_modal: Number,
-  harga_jual: Number
+  harga_jual: Number,
+  harga_jual: {
+  type: Number,
+  required: true
+}
+
 });
 
 export default mongoose.model("Inventory", inventorySchema);
