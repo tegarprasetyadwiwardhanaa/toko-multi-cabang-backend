@@ -14,6 +14,7 @@ import categoryRoutes from "./routes/categoryRoutes.js";
 import productRoutes from "./routes/productRoutes.js";
 import inventoryRoutes from "./routes/inventoryRoutes.js";
 import transactionRoutes from "./routes/transactionRoutes.js";
+import dashboardRoutes from "./routes/dashboardRoutes.js";
 
 // Load environment variables
 dotenv.config();
@@ -41,6 +42,7 @@ const startServer = async () => {
     app.use("/api/products", productRoutes);
     app.use("/api/inventory", inventoryRoutes);
     app.use("/api/transactions", transactionRoutes);
+    app.use("/api/dashboard", dashboardRoutes);
 
     // 6️⃣ Health check (opsional tapi disarankan)
     app.get("/", (req, res) => {

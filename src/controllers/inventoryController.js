@@ -101,3 +101,22 @@ export const restockBranch = async (req, res) => {
     res.status(500).json({ message: "Gagal restock ke cabang" });
   }
 };
+
+export const getPOSProducts = async (req, res) => {
+  try {
+    // Asumsi: Middleware auth sudah memasukkan data user ke req.user
+    // Kita ambil inventory berdasarkan branch milik user yang login
+    const branchId = req.user.branch; 
+
+    const products = await Inventory.find({ branch: branchId })
+      .populate("product", "kode_barang nama_barang satuan") // Ambil detail barang dari tabel Product
+      .select("product stok harga_jual"); // Ambil field yang perlu saja
+
+    // Filter agar yang stok 0 atau product null tidak error (opsional, tapi disarankan)
+    const activeProducts = products.filter(item => item.product != null);
+
+    res.status(200).json(activeProducts);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
