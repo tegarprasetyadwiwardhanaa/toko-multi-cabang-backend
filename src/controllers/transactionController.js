@@ -1,77 +1,140 @@
+import mongoose from "mongoose";
 import Transaction from "../models/Transaction.js";
 import TransactionItem from "../models/TransactionItem.js";
 import Inventory from "../models/Inventory.js";
+import User from "../models/User.js";
+
+const generateNota = () => {
+  const date = new Date();
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  const random = Math.floor(1000 + Math.random() * 9000); 
+  return `TRX-${yyyy}${mm}${dd}-${random}`;
+};
 
 // 1. FUNGSI MEMBUAT TRANSAKSI (POS)
-// Ini menangani: Simpan Header -> Simpan Detail Item -> Kurangi Stok
 export const createTransaction = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
-    const { items, total, uang_bayar, kembalian } = req.body;
-    
-    // Validasi input dasar
+    const { items, uang_bayar } = req.body; // Kita TIDAK butuh 'total' & 'kembalian' dari frontend, kita hitung sendiri biar aman.
+    const cashierId = req.user.id;
+    const branchId = req.user.branch;
+
     if (!items || items.length === 0) {
-      return res.status(400).json({ message: "Keranjang belanja kosong" });
+      throw new Error("Keranjang belanja kosong");
     }
 
-    const branchId = req.user.branch; // Dari token login staff
+    // A. Ambil Data Kasir (untuk snapshot nama)
+    const cashierData = await User.findById(cashierId).session(session);
 
-    // A. Buat Header Transaksi
-    const newTransaction = new Transaction({
-      branch: branchId,
-      total,
-      uang_bayar,
-      kembalian,
-      status: "selesai" // Langsung selesai
-    });
-    
-    const savedTransaction = await newTransaction.save();
+    // B. Persiapan Data
+    let totalTrans = 0;
+    const transactionItemsPayload = [];
 
-    // B. Proses Loop Item Belanjaan
+    // C. LOOPING ITEMS (VALIDASI HARGA & STOK DI BACKEND)
     for (const item of items) {
-      // 1. Simpan ke tabel TransactionItem (Detail Transaksi)
-      // Catatan: Pastikan frontend mengirim item.product._id (ID Product) dan item._id (ID Inventory)
-      await TransactionItem.create({
-        transaction: savedTransaction._id,
-        product: item.product._id, // ID Master Produk
-        qty: item.qty,
-        harga: item.harga_jual,
-        subtotal: item.qty * item.harga_jual
-      });
+      // item._id disini adalah ID INVENTORY (sesuai frontend Anda)
+      const inventoryItem = await Inventory.findOne({
+        _id: item._id,
+        branch: branchId // Pastikan barang benar-benar milik cabang ini
+      }).populate('product').session(session);
 
-      // 2. KURANGI STOK di tabel Inventory
-      const inventoryItem = await Inventory.findById(item._id); 
-      if (inventoryItem) {
-        // Cek stok lagi untuk keamanan (opsional tapi bagus)
-        if (inventoryItem.stok < item.qty) {
-           throw new Error(`Stok barang ${item.product.nama_barang} tidak cukup saat proses akhir.`);
-        }
-        
-        inventoryItem.stok = inventoryItem.stok - item.qty;
-        await inventoryItem.save();
+      if (!inventoryItem) {
+        throw new Error(`Item dengan ID ${item._id} tidak ditemukan di cabang ini.`);
       }
+
+      // Validasi Stok (Concurrency Check)
+      if (inventoryItem.stok < item.qty) {
+        throw new Error(`Stok ${inventoryItem.product.nama_barang} tidak cukup. Sisa: ${inventoryItem.stok}`);
+      }
+
+      // AMBIL HARGA DARI DATABASE (JANGAN DARI FRONTEND)
+      const hargaAsli = inventoryItem.harga_jual;
+      const subtotal = hargaAsli * item.qty;
+      totalTrans += subtotal;
+
+      // Kurangi Stok
+      inventoryItem.stok -= item.qty;
+      await inventoryItem.save({ session });
+
+      // Siapkan payload detail transaksi
+      transactionItemsPayload.push({
+        product: inventoryItem.product._id, // Link ke Master Product
+        qty: item.qty,
+        harga: hargaAsli, // Harga aman
+        subtotal: subtotal
+      });
     }
 
-    res.status(201).json({ 
-      message: "Transaksi berhasil", 
-      data: savedTransaction 
+    // D. Validasi Pembayaran
+    if (uang_bayar < totalTrans) {
+      throw new Error(`Uang bayar kurang. Total: ${totalTrans}, Bayar: ${uang_bayar}`);
+    }
+    const kembalian = uang_bayar - totalTrans;
+
+    // E. Simpan Header Transaksi
+    const newTrx = new Transaction({
+      branch: branchId,
+      cashier: cashierId,
+      cashier_name: cashierData.nama_lengkap, // Snapshot nama
+      no_nota: generateNota(),
+      total: totalTrans,
+      uang_bayar,
+      kembalian
+    });
+
+    const savedTrx = await newTrx.save({ session });
+
+    // F. Simpan Detail Item (Bulk Insert lebih cepat)
+    const detailItems = transactionItemsPayload.map(detail => ({
+      ...detail,
+      transaction: savedTrx._id
+    }));
+    
+    await TransactionItem.insertMany(detailItems, { session });
+
+    // G. Commit
+    await session.commitTransaction();
+    session.endSession();
+
+    res.status(201).json({
+      message: "Transaksi berhasil disimpan",
+      data: {
+        no_nota: savedTrx.no_nota,
+        total: totalTrans,
+        kembalian: kembalian
+      }
     });
 
   } catch (error) {
-    // Jika error, idealnya kita perlu rollback transaksi (hapus yg sudah terbuat),
-    // tapi untuk tahap belajar ini, return error saja cukup.
-    res.status(500).json({ message: error.message });
+    await session.abortTransaction();
+    session.endSession();
+    res.status(400).json({ message: error.message });
   }
 };
 
-// 2. MELIHAT DAFTAR TRANSAKSI (History)
 export const getTransactions = async (req, res) => {
   try {
     const branchId = req.user.branch;
+    const { startDate, endDate } = req.query; // Tangkap query params
     
-    // Staff hanya bisa lihat transaksi cabangnya sendiri
-    const transactions = await Transaction.find({ branch: branchId })
-      .sort({ createdAt: -1 }) // Urutkan dari yang terbaru
-      .populate("branch", "nama_cabang");
+    let query = { branch: branchId };
+
+    // Jika ada filter tanggal
+    if (startDate && endDate) {
+      // Set jam ke awal hari (00:00) dan akhir hari (23:59)
+      const start = new Date(startDate); start.setHours(0,0,0,0);
+      const end = new Date(endDate); end.setHours(23,59,59,999);
+      
+      query.createdAt = { $gte: start, $lte: end };
+    }
+
+    const transactions = await Transaction.find(query)
+      .sort({ createdAt: -1 })
+      .populate("cashier", "nama_lengkap"); // Ambil nama kasir
 
     res.json(transactions);
   } catch (error) {
@@ -79,17 +142,18 @@ export const getTransactions = async (req, res) => {
   }
 };
 
-// 3. MELIHAT DETAIL 1 TRANSAKSI
 export const getTransactionById = async (req, res) => {
-  try {
-    const trx = await Transaction.findById(req.params.id).populate("branch");
-    if (!trx) return res.status(404).json({ message: "Transaksi tidak ditemukan" });
-
-    // Kita juga perlu mengambil item-itemnya untuk ditampilkan di detail
-    const items = await TransactionItem.find({ transaction: trx._id }).populate("product");
-
-    res.json({ ...trx._doc, items }); // Gabungkan data transaksi dan itemnya
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
+    try {
+        const trx = await Transaction.findById(req.params.id)
+            .populate("branch")
+            .populate("cashier", "nama_lengkap"); 
+        
+        if (!trx) return res.status(404).json({ message: "Transaksi tidak ditemukan" });
+    
+        const items = await TransactionItem.find({ transaction: trx._id }).populate("product");
+    
+        res.json({ ...trx._doc, items });
+      } catch (error) {
+        res.status(500).json({ message: error.message });
+      }
 };

@@ -4,7 +4,8 @@ const branchSchema = new mongoose.Schema(
   {
     nama_cabang: String,
     alamat: String,
-    kota: String
+    kota: String,
+    is_active: { type: Boolean, default: true }
   },
   { timestamps: true }
 );

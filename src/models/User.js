@@ -6,7 +6,8 @@ const userSchema = new mongoose.Schema(
     password: String,
     nama_lengkap: String,
     role: { type: String, enum: ["owner", "staff"] },
-    branch: { type: mongoose.Schema.Types.ObjectId, ref: "Branch", default: null }
+    branch: { type: mongoose.Schema.Types.ObjectId, ref: "Branch", default: null },
+    is_active: { type: Boolean, default: true }
   },
   { timestamps: true }
 );
